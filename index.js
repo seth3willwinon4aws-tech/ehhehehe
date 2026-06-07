@@ -1,5 +1,4 @@
 const { Client, GatewayIntentBits } = require("discord.js");
-const fetch = (...args) => import("node-fetch").then(({ default: f }) => f(...args));
 const config = require("./config");
 
 // ============================================================
@@ -28,8 +27,22 @@ async function askAI(personality, conversationHistory) {
     }
   );
 
-  const data = await response.json();
-  if (!data.choices || !data.choices[0]) return null;
+  const text = await response.text();
+  console.log("AI raw response:", text);
+
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    console.error("Failed to parse AI response:", e);
+    return null;
+  }
+
+  if (!data.choices || !data.choices[0]) {
+    console.error("No choices in AI response:", data);
+    return null;
+  }
+
   return data.choices[0].message.content.trim();
 }
 
@@ -51,18 +64,15 @@ function createBot(name, botConfig) {
     ],
   });
 
-  // Conversation memory per channel (last 10 messages)
   const memory = {};
 
   client.once("ready", () => {
-    console.log(`${name} is online!`);
+    console.log(`${name} is online as ${client.user.tag}!`);
   });
 
   client.on("messageCreate", async (message) => {
-    // Ignore own messages
-    if (message.author.bot && message.author.id === client.user.id) return;
+    if (message.author.id === client.user?.id) return;
 
-    // Update last message time
     if (!message.author.bot) {
       lastMessageTime = Date.now();
       botChatActive = false;
@@ -71,33 +81,38 @@ function createBot(name, botConfig) {
     const channelId = message.channel.id;
     if (!memory[channelId]) memory[channelId] = [];
 
-    // Add message to memory
     memory[channelId].push({
       role: message.author.bot ? "assistant" : "user",
       content: `${message.author.username}: ${message.content}`,
     });
 
-    // Keep only last 10 messages
     if (memory[channelId].length > 10) memory[channelId].shift();
 
-    // Respond if mentioned
     const mentioned = message.mentions.users.has(client.user.id);
     if (!mentioned) return;
-    if (message.author.id === client.user.id) return;
+
+    console.log(`${name} was mentioned, generating response...`);
 
     try {
-      message.channel.sendTyping();
+      await message.channel.sendTyping();
       const reply = await askAI(botConfig.personality, memory[channelId]);
       if (reply) {
         await message.reply(reply);
         memory[channelId].push({ role: "assistant", content: reply });
+        console.log(`${name} replied: ${reply}`);
+      } else {
+        console.error(`${name} got null reply from AI`);
+        await message.reply("...");
       }
     } catch (err) {
-      console.error(`${name} error:`, err);
+      console.error(`${name} error responding:`, err);
     }
   });
 
-  client.login(botConfig.token);
+  client.login(botConfig.token).catch(err => {
+    console.error(`${name} failed to login:`, err);
+  });
+
   return { client, memory };
 }
 
@@ -112,20 +127,15 @@ async function startBotChat() {
 
   const botNames = Object.keys(config.BOTS);
   const channelId = config.BOT_CHAT_CHANNEL;
-
-  // Pick a random bot to start the conversation
   let lastSpeaker = null;
 
-  // Chat for about 5 exchanges then stop
   for (let i = 0; i < 5; i++) {
-    // Check if a real user came back
     const quietTime = (Date.now() - lastMessageTime) / 1000 / 60;
     if (quietTime < config.QUIET_THRESHOLD_MINUTES) {
       botChatActive = false;
       return;
     }
 
-    // Pick a bot that didn't just speak
     let speakerName;
     do {
       speakerName = botNames[Math.floor(Math.random() * botNames.length)];
@@ -136,16 +146,18 @@ async function startBotChat() {
     if (!instance) continue;
 
     const channel = await instance.client.channels.fetch(channelId).catch(() => null);
-    if (!channel) continue;
+    if (!channel) {
+      console.error("Could not find bot chat channel:", channelId);
+      continue;
+    }
 
     if (!instance.memory[channelId]) instance.memory[channelId] = [];
 
-    // Add context that this is bot chat
     const contextHistory = [
       ...instance.memory[channelId],
       {
         role: "user",
-        content: "You're hanging out in the Chaos Party Discord with the other characters. Say something casual to start or continue the conversation.",
+        content: "You're hanging out in the Chaos Party Discord with the other characters. Say something casual.",
       },
     ];
 
@@ -155,7 +167,6 @@ async function startBotChat() {
         await channel.send(reply);
         instance.memory[channelId].push({ role: "assistant", content: reply });
 
-        // Share the message to other bots' memories so they can respond contextually
         for (const otherName of botNames) {
           if (otherName !== speakerName && botInstances[otherName]) {
             if (!botInstances[otherName].memory[channelId])
@@ -171,10 +182,7 @@ async function startBotChat() {
       console.error(`Bot chat error (${speakerName}):`, err);
     }
 
-    // Wait 8-15 seconds between messages so it feels natural
-    await new Promise((r) =>
-      setTimeout(r, 8000 + Math.random() * 7000)
-    );
+    await new Promise((r) => setTimeout(r, 8000 + Math.random() * 7000));
   }
 
   botChatActive = false;
@@ -187,7 +195,6 @@ for (const [name, botConfig] of Object.entries(config.BOTS)) {
   botInstances[name] = createBot(name, botConfig);
 }
 
-// Check every minute if server has been quiet
 setInterval(() => {
   const quietMinutes = (Date.now() - lastMessageTime) / 1000 / 60;
   if (quietMinutes >= config.QUIET_THRESHOLD_MINUTES && !botChatActive) {
@@ -195,5 +202,14 @@ setInterval(() => {
     startBotChat();
   }
 }, 60 * 1000);
+
+// ============================================================
+// Keep-alive server so Render never sleeps the app
+// ============================================================
+const http = require("http");
+http.createServer((req, res) => res.end("alive")).listen(process.env.PORT || 3000);
+setInterval(() => {
+  http.get(`http://localhost:${process.env.PORT || 3000}`);
+}, 5 * 60 * 1000);
 
 console.log("Chaos Party bots starting up...");
