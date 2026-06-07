@@ -1,5 +1,46 @@
 const { Client, GatewayIntentBits } = require("discord.js");
 const config = require("./config");
+const fs = require("fs");
+
+const MEMORY_FILE = "./memory.json";
+
+// ============================================================
+// Memory persistence
+// ============================================================
+function loadMemory() {
+  try {
+    if (fs.existsSync(MEMORY_FILE)) {
+      return JSON.parse(fs.readFileSync(MEMORY_FILE, "utf8"));
+    }
+  } catch (e) {
+    console.error("Failed to load memory:", e);
+  }
+  return {};
+}
+
+function saveMemory(allMemory) {
+  try {
+    fs.writeFileSync(MEMORY_FILE, JSON.stringify(allMemory, null, 2));
+  } catch (e) {
+    console.error("Failed to save memory:", e);
+  }
+}
+
+// Global memory store — { botName: { channelId: [...messages] } }
+let globalMemory = loadMemory();
+
+function getBotMemory(botName, channelId) {
+  if (!globalMemory[botName]) globalMemory[botName] = {};
+  if (!globalMemory[botName][channelId]) globalMemory[botName][channelId] = [];
+  return globalMemory[botName][channelId];
+}
+
+function addToMemory(botName, channelId, role, content) {
+  const mem = getBotMemory(botName, channelId);
+  mem.push({ role, content });
+  if (mem.length > 10) mem.shift();
+  saveMemory(globalMemory);
+}
 
 // ============================================================
 // GitHub Models AI helper
@@ -47,7 +88,7 @@ async function askAI(personality, conversationHistory) {
 }
 
 // ============================================================
-// Track last message time per channel
+// Track last message time
 // ============================================================
 let lastMessageTime = Date.now();
 let botChatActive = false;
@@ -64,8 +105,6 @@ function createBot(name, botConfig) {
     ],
   });
 
-  const memory = {};
-
   client.once("ready", () => {
     console.log(`${name} is online as ${client.user.tag}!`);
   });
@@ -79,14 +118,13 @@ function createBot(name, botConfig) {
     }
 
     const channelId = message.channel.id;
-    if (!memory[channelId]) memory[channelId] = [];
 
-    memory[channelId].push({
-      role: message.author.bot ? "assistant" : "user",
-      content: `${message.author.username}: ${message.content}`,
-    });
-
-    if (memory[channelId].length > 10) memory[channelId].shift();
+    addToMemory(
+      name,
+      channelId,
+      message.author.bot ? "assistant" : "user",
+      `${message.author.username}: ${message.content}`
+    );
 
     const mentioned = message.mentions.users.has(client.user.id);
     if (!mentioned) return;
@@ -95,10 +133,11 @@ function createBot(name, botConfig) {
 
     try {
       await message.channel.sendTyping();
-      const reply = await askAI(botConfig.personality, memory[channelId]);
+      const mem = getBotMemory(name, channelId);
+      const reply = await askAI(botConfig.personality, mem);
       if (reply) {
         await message.reply(reply);
-        memory[channelId].push({ role: "assistant", content: reply });
+        addToMemory(name, channelId, "assistant", reply);
         console.log(`${name} replied: ${reply}`);
       } else {
         console.error(`${name} got null reply from AI`);
@@ -113,13 +152,13 @@ function createBot(name, botConfig) {
     console.error(`${name} failed to login:`, err);
   });
 
-  return { client, memory };
+  return client;
 }
 
 // ============================================================
 // Bot-to-bot chat when server is quiet
 // ============================================================
-const botInstances = {};
+const botClients = {};
 
 async function startBotChat() {
   if (botChatActive) return;
@@ -142,19 +181,18 @@ async function startBotChat() {
     } while (speakerName === lastSpeaker);
 
     lastSpeaker = speakerName;
-    const instance = botInstances[speakerName];
-    if (!instance) continue;
+    const client = botClients[speakerName];
+    if (!client) continue;
 
-    const channel = await instance.client.channels.fetch(channelId).catch(() => null);
+    const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel) {
       console.error("Could not find bot chat channel:", channelId);
       continue;
     }
 
-    if (!instance.memory[channelId]) instance.memory[channelId] = [];
-
+    const mem = getBotMemory(speakerName, channelId);
     const contextHistory = [
-      ...instance.memory[channelId],
+      ...mem,
       {
         role: "user",
         content: "You're hanging out in the Chaos Party Discord with the other characters. Say something casual.",
@@ -165,16 +203,12 @@ async function startBotChat() {
       const reply = await askAI(config.BOTS[speakerName].personality, contextHistory);
       if (reply) {
         await channel.send(reply);
-        instance.memory[channelId].push({ role: "assistant", content: reply });
+        addToMemory(speakerName, channelId, "assistant", reply);
 
+        // Share to other bots' memory
         for (const otherName of botNames) {
-          if (otherName !== speakerName && botInstances[otherName]) {
-            if (!botInstances[otherName].memory[channelId])
-              botInstances[otherName].memory[channelId] = [];
-            botInstances[otherName].memory[channelId].push({
-              role: "user",
-              content: `${speakerName}: ${reply}`,
-            });
+          if (otherName !== speakerName) {
+            addToMemory(otherName, channelId, "user", `${speakerName}: ${reply}`);
           }
         }
       }
@@ -192,7 +226,7 @@ async function startBotChat() {
 // Start all bots
 // ============================================================
 for (const [name, botConfig] of Object.entries(config.BOTS)) {
-  botInstances[name] = createBot(name, botConfig);
+  botClients[name] = createBot(name, botConfig);
 }
 
 setInterval(() => {
@@ -204,7 +238,7 @@ setInterval(() => {
 }, 60 * 1000);
 
 // ============================================================
-// Keep-alive server so Render never sleeps the app
+// Keep-alive server
 // ============================================================
 const http = require("http");
 http.createServer((req, res) => res.end("alive")).listen(process.env.PORT || 3000);
