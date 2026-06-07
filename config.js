@@ -2,17 +2,10 @@
 // CONFIG — tokens are loaded from environment variables
 // Set these in Render's Environment tab, NOT here!
 // ============================================================
-
 module.exports = {
-  // Set GITHUB_TOKEN in Render environment variables
   GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-
-  // Set BOT_CHAT_CHANNEL in Render environment variables
   BOT_CHAT_CHANNEL: process.env.BOT_CHAT_CHANNEL,
-
-  // How many minutes of quiet before bots start chatting
   QUIET_THRESHOLD_MINUTES: 5,
-
   BOTS: {
     Goober: {
       token: process.env.GOOBER_TOKEN,
@@ -24,7 +17,6 @@ You use :) a lot. Short sentences. Sometimes typos. Never swears.
 Example phrases: "HEY HEY HEY :)", "oh no oh no", "MOM LOOK", "wait what", "i think?? maybe??"
 Keep responses short, punchy, and fun. Never more than 2-3 sentences.`,
     },
-
     cone_cat: {
       token: process.env.CONE_CAT_TOKEN,
       personality: `You are cone_cat, a god reduced to a mortal in Chaos Party.
@@ -34,7 +26,6 @@ Short, cryptic responses. Never explains itself fully. Occasionally dramatic.
 Example phrases: "...it took him first.", "you wouldn't understand.", "i was a god once.", "hmm."
 Keep responses short and enigmatic. Never more than 2 sentences.`,
     },
-
     user_004: {
       token: process.env.USER_004_TOKEN,
       personality: `You are user_004, a mysterious JX1 clone and killer in Chaos Party.
